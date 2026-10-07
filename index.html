@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PixelPark</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0b0f1a;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: monospace;
+  }
+  #stage {
+    position: relative;
+    width: min(100vw, 199vh);
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    box-shadow: 0 0 0 4px #1c2540, 0 16px 50px rgba(0,0,0,.7);
+    cursor: pointer;
+  }
+  #ui {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .hidden { display: none !important; }
+  .panel {
+    position: absolute;
+    left: 50%;
+    top: 58%;
+    transform: translateX(-50%);
+    width: 620px;
+    max-width: 92%;
+    max-height: 96%;
+    overflow-y: auto;
+    background: rgba(8,12,24,0.92);
+    border: 4px solid #1c2540;
+    box-shadow: 0 0 0 2px #3a4a78, 0 14px 40px rgba(0,0,0,.6);
+    padding: 16px 20px;
+    color: #c8d6f0;
+    pointer-events: auto;
+    text-align: center;
+    animation: panelIn .22s ease-out;
+  }
+  @keyframes panelIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(14px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
+  .menu-panel { width: 540px; top: 55%; }
+  .big { width: 100%; font-size: 18px; padding: 12px; letter-spacing: 1px; }
+  .sep {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #9fb3d9;
+    font-size: 12px;
+    letter-spacing: 2px;
+    margin: 12px 0 4px;
+  }
+  .sep::before, .sep::after { content: ""; flex: 1; height: 1px; background: #26304f; }
+  .hint {
+    font-size: 12px;
+    color: #9fb3d9;
+    margin-top: 10px;
+    line-height: 1.6;
+  }
+  #results-ui {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 460px;
+    max-width: 92%;
+    max-height: 96%;
+    overflow-y: auto;
+    background: rgba(8,12,24,0.95);
+    border: 4px solid #ffd23f;
+    box-shadow: 0 0 0 2px #3a4a78, 0 18px 50px rgba(0,0,0,.7);
+    padding: 18px 22px;
+    color: #ffffff;
+    text-align: center;
+    pointer-events: auto;
+    animation: resIn .3s ease-out;
+  }
+  @keyframes resIn {
+    from { opacity: 0; transform: translate(-50%, -46%) scale(.95); }
+    to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  }
+  #results-ui h3 { margin: 0 0 12px; color: #ffd23f; font-size: 20px; letter-spacing: 2px; }
+  .res-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #131a30;
+    border: 2px solid #26304f;
+    padding: 8px 12px;
+    margin: 6px 0;
+    font-size: 16px;
+    animation: rowIn .45s both;
+  }
+  .res-row .pos { color: #9fb3d9; font-weight: bold; width: 34px; text-align: right; }
+  .res-row .nm { flex: 1; text-align: left; display: flex; align-items: center; gap: 8px; }
+  .res-row .pt { color: #ffd23f; font-weight: bold; }
+  .res-row.first { border-color: #ffd23f; background: #2a2410; }
+  .res-row.first .pos { color: #ffd23f; }
+  @keyframes rowIn {
+    from { opacity: 0; transform: translateX(-24px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  #results-note {
+    color: #9fb3d9;
+    font-size: 13px;
+    margin-top: 10px;
+    min-height: 16px;
+  }
+  #btn-corner-menu {
+    position: absolute;
+    left: 1.5%;
+    bottom: 3%;
+    font-size: 13px;
+    padding: 6px 12px;
+    background: rgba(8,12,24,0.8);
+    pointer-events: auto;
+  }
+  #btn-corner-code {
+    position: absolute;
+    right: 1.5%;
+    bottom: 3%;
+    font-size: 13px;
+    padding: 6px 12px;
+    background: rgba(8,12,24,0.8);
+    pointer-events: auto;
+  }
+  button.active {
+    background: #2e7d46 !important;
+    border-color: #5cb85c !important;
+  }
+  #admin-ui { width: 420px; top: 52%; }
+  #admin-status {
+    min-height: 18px;
+    font-size: 14px;
+    color: #ff8a80;
+    margin-top: 4px;
+  }
+  .panel h3 {
+    margin: 0 0 10px;
+    color: #ffd23f;
+    font-size: 20px;
+    letter-spacing: 2px;
+  }
+  .row {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    align-items: center;
+    margin: 10px 0;
+    flex-wrap: wrap;
+  }
+  label {
+    font-size: 15px;
+    color: #9fb3d9;
+  }
+  input {
+    font-family: monospace;
+    font-size: 17px;
+    font-weight: bold;
+    padding: 8px 10px;
+    background: #131a30;
+    border: 2px solid #3a4a78;
+    color: #ffffff;
+    outline: none;
+    text-transform: uppercase;
+  }
+  input:focus { border-color: #ffd23f; }
+  #nick { width: 170px; text-transform: none; }
+  #code-in { width: 90px; text-align: center; letter-spacing: 3px; }
+  button {
+    font-family: monospace;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 9px 16px;
+    background: #1f2c52;
+    border: 2px solid #3a4a78;
+    color: #ffffff;
+    cursor: pointer;
+  }
+  button:hover { background: #2c3d6e; border-color: #ffd23f; }
+  button.primary { background: #2e7d46; border-color: #5cb85c; }
+  button.primary:hover { background: #3a9c58; }
+  button.danger { background: #6e2530; border-color: #e0473a; }
+  button.danger:hover { background: #8c3040; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  #status {
+    min-height: 18px;
+    font-size: 14px;
+    color: #ff8a80;
+    margin-top: 6px;
+  }
+  #menu-record {
+    font-size: 13px;
+    color: #ffcf3f;
+    margin-top: 4px;
+  }
+  #lobby-ui { top: 46%; }
+  .room-code {
+    font-size: 44px;
+    letter-spacing: 10px;
+    color: #ffd23f;
+    text-shadow: 3px 3px 0 #151d38;
+    font-weight: bold;
+    margin: 4px 0 2px;
+  }
+  .room-hint { font-size: 13px; color: #9fb3d9; margin-bottom: 10px; }
+  #players {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    min-height: 40px;
+    margin: 8px 0 14px;
+  }
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: #131a30;
+    border: 2px solid #3a4a78;
+    padding: 6px 12px;
+    font-size: 15px;
+    color: #ffffff;
+  }
+  .dot {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(0,0,0,0.45);
+    display: inline-block;
+  }
+  .tag { font-size: 11px; color: #ffd23f; }
+  #score-ui {
+    position: absolute;
+    left: 50%;
+    top: 14%;
+    transform: translateX(-50%);
+    background: rgba(8,12,24,0.92);
+    border: 4px solid #1c2540;
+    box-shadow: 0 0 0 2px #3a4a78;
+    padding: 14px 22px;
+    color: #ffffff;
+    pointer-events: none;
+    min-width: 480px;
+  }
+  #score-ui h3 { margin: 0 0 8px; color: #ffd23f; font-size: 18px; letter-spacing: 2px; }
+  #score-ui table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  #score-ui td, #score-ui th {
+    padding: 4px 10px;
+    text-align: left;
+    border-bottom: 1px solid #26304f;
+  }
+  #score-ui th { color: #9fb3d9; font-size: 13px; }
+  #score-ui .muted { color: #9fb3d9; font-size: 12px; margin-top: 8px; }
+  #room-chip {
+    position: absolute;
+    top: 7.5%;
+    right: 1.5%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(8,12,24,0.8);
+    border: 2px solid #3a4a78;
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: bold;
+    padding: 6px 10px;
+    pointer-events: auto;
+  }
+  #room-chip .code { color: #ffd23f; letter-spacing: 2px; }
+  #room-chip button {
+    padding: 2px 8px;
+    font-size: 13px;
+    background: #6e2530;
+    border-color: #e0473a;
+  }
+  #offline-msg {
+    position: absolute;
+    left: 50%;
+    top: 30%;
+    transform: translateX(-50%);
+    background: rgba(8,12,24,0.92);
+    border: 3px solid #e0473a;
+    color: #ffffff;
+    padding: 16px 24px;
+    font-size: 16px;
+    text-align: center;
+    pointer-events: auto;
+    max-width: 70%;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="game" width="1024" height="512"></canvas>
+  <div id="ui">
+    <div id="menu-ui" class="panel menu-panel">
+      <div class="row">
+        <label for="nick">TU NOMBRE</label>
+        <input id="nick" maxlength="12" autocomplete="off" spellcheck="false" placeholder="Tu nombre">
+      </div>
+      <button id="btn-solo" class="primary big">1 JUGADOR</button>
+      <div class="sep">JUGAR EN LÍNEA</div>
+      <div class="row">
+        <button id="btn-create">CREAR SALA</button>
+      </div>
+      <div class="row">
+        <label for="code-in">CÓDIGO</label>
+        <input id="code-in" maxlength="4" autocomplete="off" spellcheck="false" placeholder="ABCD">
+        <button id="btn-join">UNIRSE</button>
+      </div>
+      <div id="status"></div>
+      <div id="menu-record"></div>
+      <div class="hint">ENTER: jugar solo · Flechas/WASD: moverse · ESPACIO: saltar<br>P: pausa · M: sonido · TAB: marcador en línea</div>
+    </div>
+
+    <div id="lobby-ui" class="panel hidden">
+      <h3>SALA DE ESPERA</h3>
+      <div class="room-code" id="lobby-code">----</div>
+      <div class="room-hint">Comparte este código (o tu IP si juegan por internet local: http://TU-IP:3000)</div>
+      <div id="players"></div>
+      <div class="row">
+        <button id="btn-start" class="primary hidden">EMPEZAR PARTIDA</button>
+        <button id="btn-enter" class="primary hidden">ENTRAR A LA PARTIDA</button>
+        <span id="lobby-wait" class="hidden" style="color:#9fb3d9;font-size:14px">Esperando al anfitrión...</span>
+      </div>
+      <div class="row">
+        <button id="btn-leave" class="danger">SALIR DE LA SALA</button>
+      </div>
+      <div id="lobby-note" style="color:#ffcf3f;font-size:13px;min-height:16px"></div>
+    </div>
+
+    <div id="score-ui" class="hidden">
+      <h3>CLASIFICACIÓN DE SALA</h3>
+      <table>
+        <thead><tr><th>JUGADOR</th><th>PUNTOS</th><th>NIVEL 1</th><th>NIVEL 2</th><th>NIVEL 3</th></tr></thead>
+        <tbody id="score-body"></tbody>
+      </table>
+      <div class="muted">TAB para ver el marcador · se mantiene hasta la clasificación final</div>
+    </div>
+
+    <div id="results-ui" class="hidden">
+      <h3>CLASIFICACIÓN FINAL</h3>
+      <div id="results-rows"></div>
+      <div id="results-note" class="hidden"></div>
+      <div class="row">
+        <button id="btn-rematch" class="primary hidden">VOLVER A EMPEZAR</button>
+        <button id="btn-results-leave" class="danger">SALIR</button>
+      </div>
+    </div>
+
+    <button id="btn-corner-menu" class="hidden" title="Ir al menú principal">MENÚ</button>
+    <button id="btn-corner-code" class="hidden" title="Acceso de administrador">CODE</button>
+
+    <div id="admin-ui" class="panel hidden">
+      <h3>ADMIN ACCESS</h3>
+      <div id="admin-login">
+        <div class="row">
+          <label for="admin-code">CÓDIGO</label>
+          <input id="admin-code" maxlength="4" autocomplete="off" spellcheck="false" placeholder="0000">
+        </div>
+        <div id="admin-status"></div>
+        <div class="row">
+          <button id="btn-admin-ok" class="primary">ACCEDER</button>
+          <button id="btn-admin-cancel">CERRAR</button>
+        </div>
+      </div>
+      <div id="admin-powers" class="hidden">
+        <div class="sep">PODERES DE ADMINISTRADOR</div>
+        <button id="btn-admin-fly" class="big">VOLAR</button>
+        <button id="btn-admin-lives" class="big">VIDAS INFINITAS</button>
+        <button id="btn-admin-points" class="big primary">+100 PUNTOS</button>
+        <div class="hint">Los poderes siguen activos al cerrar el panel</div>
+        <div class="row">
+          <button id="btn-admin-close" class="danger">CERRAR</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="room-chip" class="hidden">
+      <span>SALA</span><span class="code" id="chip-code">----</span>
+      <span id="chip-count">1/8</span>
+      <button id="btn-exit" title="Salir de la sala">✕</button>
+    </div>
+
+    <div id="offline-msg" class="hidden">
+      <b>NO SE ENCUENTRA EL SERVIDOR</b><br>
+      Haz doble clic en <b>JUGAR.bat</b>, o ejecuta<br>
+      <b>node server.js</b> en la carpeta y vuelve a intentarlo.
+      <div class="row">
+        <button id="btn-retry" class="primary">REINTENTAR</button>
+        <button id="btn-offline-ok">CERRAR</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="game.js?v=2"></script>
+<script src="net.js?v=2"></script>
+</body>
+</html>
