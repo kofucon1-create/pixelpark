@@ -45,15 +45,14 @@
     return undefined;
   }
 
+  function sioPath() {
+    return '/socket.io';
+  }
+
   function libCandidates() {
-    const out = [];
     const base = serverBase();
-    if (base) out.push(base + '/socket.io/socket.io.js');
+    const out = [base ? base + '/vendor/socket.io.min.js' : '/vendor/socket.io.min.js'];
     if (!base || location.protocol !== 'file:') out.push('/socket.io/socket.io.js');
-    if (!base) out.push('http://localhost:3000/socket.io/socket.io.js');
-    else if (location.protocol === 'file:' && base !== 'http://localhost:3000') {
-      out.push('http://localhost:3000/socket.io/socket.io.js');
-    }
     return out;
   }
 
@@ -330,7 +329,7 @@
     setStatus('Conectando al servidor...');
     loadSocketLib(err => {
       if (err) { showOffline(); return; }
-      const s = socket = io(serverBase(), { reconnection: true });
+      const s = socket = io(serverBase(), { path: sioPath(), transports: ['websocket'], reconnection: true });
 
       s.on('connect', () => setStatus(''));
       s.on('connect_error', () => setStatus('Sin servidor: ejecuta node server.js (o JUGAR.bat) y pulsa REINTENTAR'));
