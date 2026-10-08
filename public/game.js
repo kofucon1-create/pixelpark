@@ -388,7 +388,13 @@ window.addEventListener('keydown', e => {
   if (e.code === 'KeyM') toggleMute();
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
-window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+window.addEventListener('blur', () => {
+  for (const k in keys) keys[k] = false;
+  setTouchBtn('left', false);
+  setTouchBtn('right', false);
+  setTouchBtn('jump', false);
+  setTouchBtn('down', false);
+});
 canvas.addEventListener('click', () => {
   initAudio();
   if (state === 'menu') {
@@ -400,6 +406,57 @@ canvas.addEventListener('click', () => {
     else startGame();
   }
 });
+
+const touch = { left: false, right: false, jump: false, down: false };
+const touchMode = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+const touchUIEl = document.getElementById('touch-ui');
+
+function setTouchBtn(name, on) {
+  if (touch[name] === on) return;
+  touch[name] = on;
+  if (on) {
+    if (name === 'jump') pressed.TouchJump = true;
+    initAudio();
+  }
+  if (touchUIEl) {
+    const b = touchUIEl.querySelector('[data-t="' + name + '"]');
+    if (b) b.classList.toggle('on', on);
+  }
+}
+
+function refreshTouchUI() {
+  if (!touchMode || !touchUIEl) return;
+  const want = state !== 'menu' && state !== 'gameover' && state !== 'win';
+  touchUIEl.classList.toggle('on', want);
+  touchUIEl.classList.toggle('fly', !!adminFly);
+  if (!want) {
+    setTouchBtn('left', false);
+    setTouchBtn('right', false);
+    setTouchBtn('jump', false);
+    setTouchBtn('down', false);
+  } else if (!adminFly && touch.down) {
+    setTouchBtn('down', false);
+  }
+}
+
+if (touchMode) {
+  document.body.classList.add('touch');
+  if (touchUIEl) {
+    touchUIEl.querySelectorAll('.tbtn').forEach(btn => {
+      const name = btn.getAttribute('data-t');
+      btn.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        try { btn.setPointerCapture(e.pointerId); } catch (err) {}
+        setTouchBtn(name, true);
+      });
+      const release = () => setTouchBtn(name, false);
+      btn.addEventListener('pointerup', release);
+      btn.addEventListener('pointercancel', release);
+      btn.addEventListener('lostpointercapture', release);
+      btn.addEventListener('contextmenu', e => e.preventDefault());
+    });
+  }
+}
 
 function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
 function overlap(a, b) {
@@ -751,10 +808,10 @@ function updateParticles() {
 }
 
 function updatePlayer() {
-  const left = keys.ArrowLeft || keys.KeyA;
-  const right = keys.ArrowRight || keys.KeyD;
-  const jumpHeld = keys.Space || keys.ArrowUp || keys.KeyW;
-  const jumpPressed = pressed.Space || pressed.ArrowUp || pressed.KeyW;
+  const left = keys.ArrowLeft || keys.KeyA || touch.left;
+  const right = keys.ArrowRight || keys.KeyD || touch.right;
+  const jumpHeld = keys.Space || keys.ArrowUp || keys.KeyW || touch.jump;
+  const jumpPressed = pressed.Space || pressed.ArrowUp || pressed.KeyW || pressed.TouchJump;
 
   if (left && !right) {
     player.vx -= ACCEL;
@@ -769,8 +826,8 @@ function updatePlayer() {
   player.vx = clamp(player.vx, -MAX_SPEED, MAX_SPEED);
 
   if (adminFly) {
-    const up = keys.Space || keys.ArrowUp || keys.KeyW;
-    const down = keys.ArrowDown || keys.KeyS;
+    const up = keys.Space || keys.ArrowUp || keys.KeyW || touch.jump;
+    const down = keys.ArrowDown || keys.KeyS || touch.down;
     player.vy = up ? -4.3 : down ? 4.3 : player.vy * 0.85;
     player.prevBottom = player.y + player.h;
     moveX(player);
@@ -1604,6 +1661,7 @@ function render() {
   drawOverlay();
   drawSpectateBar();
   updateCornerBtn();
+  refreshTouchUI();
 }
 
 let lastT = 0;

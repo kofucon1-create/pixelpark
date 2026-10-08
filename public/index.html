@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>PixelPark</title>
 <style>
   * { box-sizing: border-box; }
@@ -21,6 +21,7 @@
   #stage {
     position: relative;
     width: min(100vw, 199vh);
+    width: min(100vw, 199dvh);
   }
   canvas {
     display: block;
@@ -306,6 +307,106 @@
     text-align: center;
     pointer-events: auto;
     max-width: 70%;
+    z-index: 8;
+  }
+
+  canvas { touch-action: none; }
+  button, input { touch-action: manipulation; }
+
+  /* ---- Controles táctiles ---- */
+  #touch-ui {
+    position: absolute;
+    inset: 0;
+    display: none;
+    pointer-events: none;
+    z-index: 6;
+  }
+  #touch-ui.on { display: block; }
+  .t-pad {
+    position: absolute;
+    left: max(14px, env(safe-area-inset-left));
+    bottom: max(14px, env(safe-area-inset-bottom));
+    display: flex;
+    gap: 14px;
+  }
+  .tbtn {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: clamp(62px, 13vw, 86px);
+    height: clamp(62px, 13vw, 86px);
+    padding: 0;
+    border-radius: 50%;
+    font-size: clamp(26px, 6vw, 36px);
+    line-height: 1;
+    background: rgba(31,44,82,.7);
+    border: 3px solid #3a4a78;
+    color: #ffffff;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    box-shadow: 0 6px 18px rgba(0,0,0,.45);
+  }
+  .tbtn.on { background: rgba(46,125,70,.85); border-color: #5cb85c; }
+  .t-jump {
+    position: absolute;
+    right: max(14px, env(safe-area-inset-right));
+    bottom: max(14px, env(safe-area-inset-bottom));
+  }
+  .t-down {
+    position: absolute;
+    right: calc(max(14px, env(safe-area-inset-right, 0px)) + clamp(62px, 13vw, 86px) + 10px);
+    bottom: max(14px, env(safe-area-inset-bottom, 0px));
+    display: none;
+  }
+  #touch-ui.fly .t-down { display: flex; }
+  body.touch #btn-corner-menu,
+  body.touch #btn-corner-code {
+    bottom: calc(env(safe-area-inset-bottom, 0px) + clamp(90px, calc(13vw + 28px), 114px));
+  }
+  body.touch #menu-ui .hint { display: none; }
+
+  /* ---- Pantallas táctiles / pequeñas ---- */
+  @media (max-width: 760px), (pointer: coarse) {
+    button, input { min-height: 44px; font-size: 16px; }
+    button { padding: 11px 16px; }
+    .panel { padding: 14px; }
+    .menu-panel { width: min(540px, 94vw); }
+    #admin-ui { width: min(420px, 94vw); }
+    .room-code { font-size: clamp(30px, 9vw, 44px); letter-spacing: 6px; }
+    #nick { width: min(170px, 44vw); }
+    #score-ui { min-width: 0; width: min(480px, 94vw); padding: 10px 14px; }
+    #score-ui table { font-size: 13px; }
+    #score-ui td, #score-ui th { padding: 4px 6px; }
+    #btn-corner-menu, #btn-corner-code { font-size: 14px; padding: 10px 14px; }
+    #room-chip { top: calc(7.5% + env(safe-area-inset-top, 0px)); }
+  }
+
+  /* ---- Retrato: pantalla del juego a pantalla completa, menús bajo el canvas ---- */
+  @media (orientation: portrait) and (max-width: 860px) {
+    #stage {
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      padding-top: env(safe-area-inset-top, 0px);
+    }
+    canvas { width: 100vw; }
+    .panel, .menu-panel, #lobby-ui, #admin-ui {
+      left: 50%;
+      right: auto;
+      top: calc(env(safe-area-inset-top, 0px) + 50vw + 14px);
+      bottom: auto;
+      transform: translateX(-50%);
+      width: min(540px, 94vw);
+      max-width: none;
+      max-height: calc(100vh - env(safe-area-inset-top, 0px) - 50vw - 30px);
+      max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 50vw - 30px);
+    }
+    #admin-ui { width: min(420px, 94vw); }
+    #score-ui { top: calc(env(safe-area-inset-top, 0px) + 8px); min-width: 0; }
+    #room-chip { top: calc(env(safe-area-inset-top, 0px) + 10px); }
   }
 </style>
 </head>
@@ -411,10 +512,19 @@
         <button id="btn-offline-ok">CERRAR</button>
       </div>
     </div>
+
+    <div id="touch-ui">
+      <div class="t-pad">
+        <button class="tbtn" data-t="left" aria-label="Mover a la izquierda">⬅️</button>
+        <button class="tbtn" data-t="right" aria-label="Mover a la derecha">➡️</button>
+      </div>
+      <button class="tbtn t-down" data-t="down" aria-label="Bajar (modo vuelo)">⬇️</button>
+      <button class="tbtn t-jump" data-t="jump" aria-label="Saltar">⬆️</button>
+    </div>
   </div>
 </div>
 <script src="firebase-config.js?v=1"></script>
-<script src="game.js?v=2"></script>
+<script src="game.js?v=4"></script>
 <script src="net.js?v=6"></script>
 </body>
 </html>
