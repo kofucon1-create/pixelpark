@@ -30,63 +30,136 @@
     remotes: {}
   };
 
-  let socket = null;
-  let sendTimer = null;
+  const FB_SDK = 'https://www.gstatic.com/firebasejs/13.0.0/';
+  const COLORS = ['#e0473a', '#3b78e0', '#5cb85c', '#ffd23f', '#b06bff', '#ff8a3d', '#37d0c0', '#ff6fae'];
+
+  let db = null;
+  let FBDB = null;
+  let fbApp = null;
   let libLoading = false;
   let libQueue = [];
   let pendingAction = null;
+  let actionBusy = false;
 
-  function serverBase() {
-    try {
-      const saved = (localStorage.getItem('pixelpark_server') || '').trim().replace(/\/+$/, '');
-      if (saved) return saved;
-    } catch (e) {}
-    if (window.location && location.protocol === 'file:') return 'http://localhost:3000';
-    return undefined;
+  let sendTimer = null;
+  let statsAcc = 0;
+
+  let connWatchStarted = false;
+  let everConnected = false;
+  let connCbQueue = [];
+  let connTimeout = null;
+
+  let infoCache = null;
+  let lobbyCache = {};
+  let rawState = {};
+  let rawWorld = {};
+  let unsubs = [];
+  let resultsSent = false;
+  let hostGoneNote = false;
+
+  function cleanName(n) {
+    if (typeof n !== 'string') return 'Jugador';
+    n = n.replace(/<[^>]*>/g, '').replace(/[<>&"'`]/g, '').trim().slice(0, 12);
+    return n || 'Jugador';
   }
 
-  function sioPath() {
-    return '/socket.io';
+  function makeCode() {
+    const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let c = '';
+    for (let i = 0; i < 4; i++) c += cs[Math.floor(Math.random() * cs.length)];
+    return c;
   }
 
-  function libCandidates() {
-    const base = serverBase();
-    const out = [base ? base + '/vendor/socket.io.min.js' : '/vendor/socket.io.min.js'];
-    if (!base || location.protocol !== 'file:') out.push('/socket.io/socket.io.js');
+  function newPid() {
+    let a, b;
+    if (window.crypto && crypto.getRandomValues) {
+      const u = crypto.getRandomValues(new Uint32Array(2));
+      a = u[0]; b = u[1];
+    } else {
+      a = Math.floor(Math.random() * 0xffffffff);
+      b = Math.floor(Math.random() * 0xffffffff);
+    }
+    return 'p' + (a >>> 0).toString(36) + (b >>> 0).toString(36);
+  }
+
+  function lobbyEntry(name, color) {
+    return {
+      name: cleanName(name),
+      color: color,
+      joinedAt: Date.now(),
+      done: false,
+      win: false,
+      finished: false,
+      score: 0
+    };
+  }
+
+  function num(v, max) {
+    return Math.max(0, Math.min(max, +v || 0));
+  }
+
+  function hotState(s) {
+    return {
+      x: +s.x || 0,
+      y: +s.y || 0,
+      face: s.face === -1 ? -1 : 1,
+      onGround: !!s.onGround,
+      run: +s.run || 0,
+      alive: s.state !== 'dying' && s.state !== 'gameover' && s.state !== 'win',
+      level: Math.max(1, Math.min(3, +s.level || 1)),
+      score: num(s.score, 9999999),
+      coins: num(s.coins, 999),
+      coinsMax: num(s.coinsMax, 999),
+      enemies: num(s.enemies, 999),
+      lives: num(s.lives, 99)
+    };
+  }
+
+  function coldWorld(s) {
+    return {
+      we: Array.isArray(s.we) ? s.we.slice(0, 64).map(a => Array.isArray(a) && a.length >= 4
+        ? [num(a[0], 999), num(a[1], 99999), num(a[2], 99999), a[3] === -1 ? -1 : 1, a[4] ? 1 : 0]
+        : null).filter(Boolean) : [],
+      wc: typeof s.wc === 'string' ? s.wc.replace(/[^01]/g, '').slice(0, 64) : ''
+    };
+  }
+
+  function scoreboardList() {
+    const out = [];
+    for (const pid in lobbyCache) {
+      const e = lobbyCache[pid];
+      if (!e || !e.finished) continue;
+      out.push({ id: pid, name: e.name, color: e.color, score: +e.score || 0, times: e.times || {} });
+    }
+    out.sort((a, b) => b.score - a.score);
     return out;
   }
 
-  function loadSocketLib(cb) {
-    if (typeof io !== 'undefined') return cb(null);
-    libQueue.push(cb);
-    if (libLoading) return;
-    libLoading = true;
-    const urls = libCandidates();
-    let i = 0;
-    function done(err) {
-      libLoading = false;
-      const q = libQueue;
-      libQueue = [];
-      q.forEach(f => f(err));
+  function resultList() {
+    const out = scoreboardList();
+    const seen = {};
+    for (const e of out) seen[e.id] = true;
+    for (const pid in lobbyCache) {
+      const e = lobbyCache[pid];
+      if (!e || seen[pid]) continue;
+      out.push({ id: pid, name: e.name, color: e.color, score: 0, times: {} });
     }
-    function attempt() {
-      if (i >= urls.length) return done(new Error('sin cliente socket.io'));
-      const el = document.createElement('script');
-      el.src = urls[i++];
-      el.onload = () => {
-        el.remove();
-        if (typeof io !== 'undefined') done(null);
-        else attempt();
-      };
-      el.onerror = () => { el.remove(); attempt(); };
-      document.head.appendChild(el);
-    }
-    attempt();
+    out.sort((a, b) => b.score - a.score);
+    return out;
   }
 
-  function showOffline() {
+  function errMsg(e) {
+    const c = e && e.code;
+    if (c === 'PERMISSION_DENIED') return 'Firebase rechazó la operación: revisa las reglas de la base de datos';
+    if (c === 'UNAVAILABLE' || c === 'NETWORK_REQUEST_FAILED') return 'Sin conexión con Firebase';
+    return (e && e.message) || 'Error de conexión con Firebase';
+  }
+
+  function showOffline(msg) {
     show(offlineMsg);
-    setStatus('');
+    setStatus(msg || '');
+    actionBusy = false;
+    if (msg) console.error('[PixelPark]', msg);
     setLock();
   }
 
@@ -194,9 +267,17 @@
     PK.scoreLocked = false;
     PK.code = null;
     PK.me = null;
+    PK.hostId = null;
     PK.players = [];
     PK.scoreboard = [];
     PK.remotes = {};
+    infoCache = null;
+    lobbyCache = {};
+    rawState = {};
+    rawWorld = {};
+    resultsSent = false;
+    hostGoneNote = false;
+    statsAcc = 0;
     hide(roomChip);
     hide(scoreUi);
     hide(resultsUi);
@@ -204,7 +285,8 @@
   }
 
   function leaveRoom() {
-    if (socket && PK.online) socket.emit('leave');
+    if (sendTimer) { clearInterval(sendTimer); sendTimer = null; }
+    if (PK.online) detachRoom(true);
     resetRoom();
     if (window.PKGame) PKGame.toMenu();
     showMenu();
@@ -240,7 +322,7 @@
     if (PK.gameActive) return;
     $('lobby-note').textContent = PK.done
       ? 'Terminaste la partida: ahora solo puedes espectar'
-      : '';
+      : (hostGoneNote ? 'El anfitrión ha abandonado la partida' : '');
   }
 
   function renderScoreboard() {
@@ -264,6 +346,7 @@
 
   function showResults(data) {
     PK.inResults = true;
+    PK.gameActive = false;
     PK.scoreLocked = false;
     hide(scoreUi);
     hide(menuUi);
@@ -292,8 +375,400 @@
     setLock();
   }
 
+  // ---------------- Firebase: carga del SDK y conexión ----------------
+
+  function loadFirebase(cb) {
+    if (db) return cb(null);
+    libQueue.push(cb);
+    if (libLoading) return;
+    libLoading = true;
+    Promise.all([
+      import(FB_SDK + 'firebase-app.js'),
+      import(FB_SDK + 'firebase-database.js')
+    ]).then(mods => {
+      const cfg = window.FIREBASE_CONFIG;
+      if (!cfg || !cfg.apiKey || !cfg.databaseURL) {
+        throw new Error('Falta public/firebase-config.js con window.FIREBASE_CONFIG (databaseURL incluida)');
+      }
+      if (!fbApp) fbApp = mods[0].initializeApp(cfg);
+      FBDB = mods[1];
+      db = FBDB.getDatabase(fbApp);
+      libLoading = false;
+      const q = libQueue;
+      libQueue = [];
+      q.forEach(f => f(null));
+    }).catch(err => {
+      libLoading = false;
+      const q = libQueue;
+      libQueue = [];
+      q.forEach(f => f(err || new Error('sin SDK de Firebase')));
+    });
+  }
+
+  function startConnWatch() {
+    if (connWatchStarted || !db) return;
+    connWatchStarted = true;
+    FBDB.onValue(FBDB.ref(db, '.info/connected'), snap => {
+      const up = !!snap.val();
+      if (up) {
+        everConnected = true;
+        if (connTimeout) { clearTimeout(connTimeout); connTimeout = null; }
+        setStatus('');
+        if (connCbQueue.length) {
+          const q = connCbQueue;
+          connCbQueue = [];
+          q.forEach(f => f());
+        }
+        return;
+      }
+      if (!everConnected) return;
+      if (PK.online) {
+        detachRoom(true);
+        resetRoom();
+        if (window.PKGame) PKGame.toMenu();
+        showMenu();
+        setStatus('Conexión perdida con Firebase');
+      }
+    });
+  }
+
+  function ensureFirebase(cb) {
+    loadFirebase(err => {
+      if (err) {
+        console.error('[PixelPark] No se pudo cargar Firebase:', err);
+        showOffline('No se pudo cargar Firebase: ' + errMsg(err));
+        return;
+      }
+      startConnWatch();
+      if (everConnected) { cb(); return; }
+      setStatus('Conectando al servidor...');
+      connCbQueue.push(cb);
+      if (!connTimeout) {
+        connTimeout = setTimeout(() => {
+          connTimeout = null;
+          if (connCbQueue.length) {
+            connCbQueue = [];
+            showOffline('No se puede conectar con Firebase. Revisa tu conexión e inténtalo otra vez.');
+          }
+        }, 8000);
+      }
+    });
+  }
+
+  // ---------------- Sala: listeners y estado ----------------
+
+  function handleInfo(val) {
+    if (!PK.online) return;
+    if (!val) { roomClosed(); return; }
+    const prev = infoCache;
+    infoCache = val;
+    const started = !!val.started;
+    if (!prev) {
+      detectHostGone();
+      syncLobbyUi();
+      maybeResults();
+      if (started && !PK.gameActive && !PK.done) enterGame();
+      return;
+    }
+    if (prev.started !== started) {
+      if (started) {
+        resultsSent = false;
+        if (!PK.done && !PK.gameActive) enterGame();
+      } else {
+        onNewMatch();
+        return;
+      }
+    }
+    detectHostGone();
+    syncLobbyUi();
+    maybeResults();
+  }
+
+  function handleLobby(val) {
+    if (!PK.online) return;
+    const prev = lobbyCache;
+    lobbyCache = val || {};
+    const prevIds = Object.keys(prev);
+    const nowIds = Object.keys(lobbyCache);
+    if (prevIds.length !== nowIds.length || nowIds.some(id => !prev[id])) hostGoneNote = false;
+    for (const pid of nowIds) mergeRemote(pid);
+    detectHostGone();
+    syncLobbyUi();
+    maybeResults();
+  }
+
+  function onRemoteData(kind, pid, val) {
+    if (!val || (PK.me && pid === PK.me.id)) return;
+    if (kind === 'state') rawState[pid] = val;
+    else rawWorld[pid] = val;
+    mergeRemote(pid);
+  }
+
+  function onRemoteGone(kind, pid) {
+    if (kind === 'state') {
+      delete rawState[pid];
+      delete PK.remotes[pid];
+    } else {
+      delete rawWorld[pid];
+    }
+  }
+
+  function mergeRemote(pid) {
+    const s = rawState[pid];
+    if (!s || (PK.me && pid === PK.me.id)) return;
+    const w = rawWorld[pid];
+    const e = lobbyCache[pid];
+    let r = PK.remotes[pid];
+    if (!r) r = PK.remotes[pid] = { x: +s.x || 0, y: +s.y || 0, tx: +s.x || 0, ty: +s.y || 0 };
+    r.tx = +s.x || 0;
+    r.ty = +s.y || 0;
+    r.face = s.face === -1 ? -1 : 1;
+    r.onGround = !!s.onGround;
+    r.run = +s.run || 0;
+    r.alive = !!s.alive;
+    r.level = Math.max(1, Math.min(3, +s.level || 1));
+    r.score = +s.score || 0;
+    r.coins = +s.coins || 0;
+    r.coinsMax = +s.coinsMax || 0;
+    r.enemies = +s.enemies || 0;
+    r.lives = +s.lives || 0;
+    if (w) {
+      if (w.we) r.we = w.we;
+      if (w.wc !== undefined && w.wc !== null) r.wc = w.wc;
+    }
+    if (e) { r.name = e.name; r.color = e.color; }
+  }
+
+  function syncLobbyUi() {
+    if (!PK.online || !infoCache) return;
+    const hostId = infoCache.hostId;
+    const players = Object.keys(lobbyCache).map(pid => ({
+      id: pid,
+      name: lobbyCache[pid] ? lobbyCache[pid].name : '',
+      color: lobbyCache[pid] ? lobbyCache[pid].color : '',
+      host: pid === hostId
+    }));
+    renderLobby({ code: PK.code, hostId: hostId, started: !!infoCache.started, players: players });
+    PK.scoreboard = scoreboardList();
+    if (!scoreUi.classList.contains('hidden')) renderScoreboard();
+    if (PK.inResults) {
+      if (PK.me && hostId === PK.me.id) show($('btn-rematch'));
+      else hide($('btn-rematch'));
+    }
+  }
+
+  function detectHostGone() {
+    if (!PK.online || !db || !infoCache || !PK.code) return;
+    const gone = infoCache.hostId;
+    if (!gone || lobbyCache[gone]) return;
+    const ids = Object.keys(lobbyCache);
+    if (!ids.length) return;
+    const candidate = ids.slice().sort((a, b) => {
+      const ja = (lobbyCache[a].joinedAt || 0) - (lobbyCache[b].joinedAt || 0);
+      return ja || (a < b ? -1 : 1);
+    })[0];
+    hostGoneNote = true;
+    if (PK.inResults) {
+      const isHost = !!(PK.me && PK.me.id === candidate);
+      show(resultsNote);
+      resultsNote.textContent = isHost
+        ? 'Ahora tú eres el anfitrión: pulsa VOLVER A EMPEZAR'
+        : 'El anfitrión ha abandonado la partida';
+      if (isHost) show($('btn-rematch'));
+      else hide($('btn-rematch'));
+    }
+    FBDB.runTransaction(FBDB.ref(db, 'rooms/' + PK.code + '/info'), cur => {
+      if (!cur) return null;
+      if (cur.hostId !== gone) return undefined;
+      cur.hostId = candidate;
+      return cur;
+    }).catch(() => {});
+  }
+
+  function maybeResults() {
+    if (!infoCache || !infoCache.started || resultsSent) return;
+    const ids = Object.keys(lobbyCache);
+    if (!ids.length) return;
+    if (!ids.every(id => lobbyCache[id] && lobbyCache[id].done)) return;
+    resultsSent = true;
+    showResults({ scoreboard: resultList(), hostId: infoCache.hostId });
+  }
+
+  function onNewMatch() {
+    hide(resultsUi);
+    hide(scoreUi);
+    hide(menuUi);
+    hide(roomChip);
+    PK.inResults = false;
+    PK.won = false;
+    PK.done = false;
+    PK.scoreLocked = false;
+    PK.gameActive = false;
+    resultsSent = false;
+    hostGoneNote = false;
+    PK.remotes = {};
+    rawState = {};
+    rawWorld = {};
+    PK.scoreboard = [];
+    show(lobbyUi);
+    setLock();
+    syncLobbyUi();
+  }
+
+  function roomClosed() {
+    detachRoom(true);
+    resetRoom();
+    if (window.PKGame) PKGame.toMenu();
+    showMenu();
+    setStatus('La sala fue cerrada');
+  }
+
+  function attachRoom(code, pid) {
+    const base = 'rooms/' + code;
+    unsubs.push(FBDB.onValue(FBDB.ref(db, base + '/info'), s => handleInfo(s.val())));
+    unsubs.push(FBDB.onValue(FBDB.ref(db, base + '/lobby'), s => handleLobby(s.val())));
+    for (const kind of ['state', 'world']) {
+      const r = FBDB.ref(db, base + '/' + kind);
+      unsubs.push(FBDB.onChildAdded(r, s => onRemoteData(kind, s.key, s.val())));
+      unsubs.push(FBDB.onChildChanged(r, s => onRemoteData(kind, s.key, s.val())));
+      unsubs.push(FBDB.onChildRemoved(r, s => onRemoteGone(kind, s.key)));
+    }
+    for (const sub of ['lobby', 'state', 'world']) {
+      try {
+        const pr = FBDB.onDisconnect(FBDB.ref(db, base + '/' + sub + '/' + pid)).remove();
+        if (pr && pr.catch) pr.catch(() => {});
+      } catch (e) {}
+    }
+  }
+
+  function detachRoom(removeMe) {
+    const code = PK.code;
+    const pid = PK.me && PK.me.id;
+    const us = unsubs;
+    unsubs = [];
+    us.forEach(u => { try { u(); } catch (e) {} });
+    rawState = {};
+    rawWorld = {};
+    infoCache = null;
+    lobbyCache = {};
+    if (!removeMe || !db || !code || !pid) return;
+    const base = 'rooms/' + code;
+    const paths = ['lobby/' + pid, 'state/' + pid, 'world/' + pid];
+    const removals = paths.map(p => FBDB.remove(FBDB.ref(db, base + '/' + p)).catch(() => {}));
+    Promise.all(removals).then(() => {
+      FBDB.runTransaction(FBDB.ref(db, base), cur => {
+        if (!cur) return null;
+        if (cur.lobby && Object.keys(cur.lobby).length > 0) return undefined;
+        return null;
+      }).catch(() => {});
+    }).catch(() => {});
+  }
+
+  function joinSuccess(code, pid, entry, started) {
+    PK.online = true;
+    PK.code = code;
+    PK.me = { id: pid, name: entry.name, color: entry.color };
+    setStatus('');
+    hide(menuUi);
+    hide(offlineMsg);
+    attachRoom(code, pid);
+    if (started) { enterGame(); return; }
+    $('lobby-code').textContent = code;
+    $('lobby-note').textContent = '';
+    show(lobbyUi);
+    setLock();
+  }
+
+  function attemptCreate(n, pid, entry) {
+    const code = makeCode();
+    FBDB.runTransaction(FBDB.ref(db, 'rooms/' + code), cur => {
+      if (cur) {
+        if (cur.lobby && Object.keys(cur.lobby).length > 0) return undefined;
+      }
+      const room = { info: { hostId: pid, started: false, createdAt: Date.now() }, lobby: {} };
+      room.lobby[pid] = entry;
+      return room;
+    }).then(res => {
+      if (res && res.committed) {
+        pendingAction = null;
+        actionBusy = false;
+        joinSuccess(code, pid, entry, false);
+      } else if (n < 7) {
+        attemptCreate(n + 1, pid, entry);
+      } else {
+        pendingAction = null;
+        actionBusy = false;
+        setStatus('No se pudo crear la sala, inténtalo otra vez');
+      }
+    }).catch(err => {
+      actionBusy = false;
+      setStatus(errMsg(err));
+    });
+  }
+
+  function createRoom() {
+    if (PK.online || actionBusy) return;
+    pendingAction = createRoom;
+    actionBusy = true;
+    ensureFirebase(() => {
+      setStatus('Creando sala...');
+      const pid = newPid();
+      attemptCreate(0, pid, lobbyEntry($('nick').value, COLORS[0]));
+    });
+  }
+
+  function joinRoom() {
+    const code = $('code-in').value.toUpperCase().trim();
+    if (code.length !== 4) { setStatus('El código tiene 4 caracteres'); return; }
+    if (PK.online || actionBusy) return;
+    pendingAction = joinRoom;
+    actionBusy = true;
+    ensureFirebase(() => {
+      setStatus('Uniéndote...');
+      const pid = newPid();
+      FBDB.get(FBDB.ref(db, 'rooms/' + code)).then(snap => {
+        if (!snap.exists()) {
+          pendingAction = null;
+          actionBusy = false;
+          setStatus('Sala no encontrada');
+          return;
+        }
+        const val = snap.val() || {};
+        const lc = val.lobby || {};
+        const n = Object.keys(lc).length;
+        const started = !!(val.info && val.info.started);
+        if (n >= 8) {
+          pendingAction = null;
+          actionBusy = false;
+          setStatus('Sala llena (máx. 8)');
+          return;
+        }
+        const entry = lobbyEntry($('nick').value, COLORS[n % COLORS.length]);
+        return FBDB.runTransaction(FBDB.ref(db, 'rooms/' + code + '/lobby'), cur => {
+          if (!cur) return { [pid]: entry };
+          if (Object.keys(cur).length >= 8) return undefined;
+          cur[pid] = entry;
+          return cur;
+        }).then(res => {
+          pendingAction = null;
+          actionBusy = false;
+          if (!res || !res.committed) { setStatus('Sala no encontrada o llena'); return; }
+          joinSuccess(code, pid, entry, started);
+        });
+      }).catch(err => {
+        actionBusy = false;
+        setStatus(errMsg(err));
+      });
+    });
+  }
+
+  function writeDone(win) {
+    if (!db || !PK.online || !PK.me) return;
+    FBDB.update(FBDB.ref(db, 'rooms/' + PK.code + '/lobby/' + PK.me.id), { done: true, win: !!win }).catch(() => {});
+  }
+
   function enterGame() {
-    if (PK.done) return;
+    if (PK.done || PK.gameActive) return;
     PK.gameActive = true;
     PK.scoreLocked = false;
     hide(scoreUi);
@@ -305,169 +780,26 @@
     $('chip-code').textContent = PK.code || '----';
     setLock();
     if (window.PKGame) PKGame.start();
-    if (!sendTimer) {
-      sendTimer = setInterval(() => {
-        if (!PK.online || !PK.gameActive || !socket || !window.PKGame) return;
-        const s = PKGame.getState();
-        if (!PK.done && s.state === 'gameover') {
-          PK.done = true;
-          socket.emit('done', { win: false });
-        }
-        socket.emit('state', {
-          x: s.x, y: s.y, face: s.face, onGround: s.onGround, run: s.run,
-          level: s.level, score: s.score, coins: s.coins, coinsMax: s.coinsMax,
-          enemies: s.enemies, lives: s.lives,
-          we: s.world.we, wc: s.world.wc,
-          alive: s.state !== 'dying' && s.state !== 'gameover' && s.state !== 'win'
-        });
-      }, 50);
+    if (!sendTimer) sendTimer = setInterval(sendTick, 66);
+  }
+
+  function sendTick() {
+    if (!PK.online || !PK.gameActive || !db || !PK.me || !window.PKGame) return;
+    const s = PKGame.getState();
+    if (!PK.done && s.state === 'gameover') {
+      PK.done = true;
+      writeDone(false);
     }
-  }
-
-  function ensureSocket(cb) {
-    if (socket) return cb(socket);
-    setStatus('Conectando al servidor...');
-    loadSocketLib(err => {
-      if (err) { showOffline(); return; }
-      const s = socket = io(serverBase(), { path: sioPath(), transports: ['websocket'], reconnection: true });
-
-      s.on('connect', () => setStatus(''));
-      s.on('connect_error', () => setStatus('Sin servidor: ejecuta node server.js (o JUGAR.bat) y pulsa REINTENTAR'));
-
-    socket.on('lobby', data => {
-      if (!PK.online) return;
-      renderLobby(data);
-      if (PK.inResults) {
-        if (PK.me && PK.hostId === PK.me.id) show($('btn-rematch'));
-        else hide($('btn-rematch'));
-      }
-    });
-
-    socket.on('hostleft', () => {
-      const gone = 'El anfitrión ha abandonado la partida';
-      $('lobby-note').textContent = gone;
-      if (PK.inResults) {
-        const isHost = !!(PK.me && PK.hostId === PK.me.id);
-        show(resultsNote);
-        resultsNote.textContent = isHost
-          ? 'Ahora tú eres el anfitrión: pulsa VOLVER A EMPEZAR'
-          : gone;
-        if (isHost) show($('btn-rematch'));
-        else hide($('btn-rematch'));
-      }
-    });
-
-    socket.on('started', () => {
-      if (!PK.online || PK.done) return;
-      enterGame();
-    });
-
-    socket.on('world', arr => {
-      const seen = {};
-      for (const p of arr) {
-        if (PK.me && p.id === PK.me.id) continue;
-        seen[p.id] = true;
-        let r = PK.remotes[p.id];
-        if (!r) {
-          r = PK.remotes[p.id] = { x: p.s.x, y: p.s.y, tx: p.s.x, ty: p.s.y };
-        }
-        r.tx = p.s.x;
-        r.ty = p.s.y;
-        r.face = p.s.face;
-        r.onGround = p.s.onGround;
-        r.run = p.s.run;
-        r.alive = p.s.alive;
-        r.level = p.s.level;
-        r.score = p.s.score;
-        r.coins = p.s.coins;
-        r.coinsMax = p.s.coinsMax;
-        r.enemies = p.s.enemies;
-        r.lives = p.s.lives;
-        if (p.s.we) r.we = p.s.we;
-        if (p.s.wc !== undefined) r.wc = p.s.wc;
-        r.name = p.name;
-        r.color = p.color;
-      }
-      for (const id in PK.remotes) if (!seen[id]) delete PK.remotes[id];
-    });
-
-    socket.on('scoreboard', data => {
-      PK.scoreboard = data || [];
-      if (!scoreUi.classList.contains('hidden')) renderScoreboard();
-    });
-
-    socket.on('results', data => {
-      if (!PK.online) return;
-      showResults(data);
-    });
-
-    socket.on('newmatch', () => {
-      hide(resultsUi);
-      hide(scoreUi);
-      hide(menuUi);
-      hide(roomChip);
-      PK.inResults = false;
-      PK.won = false;
-      PK.done = false;
-      PK.scoreLocked = false;
-      PK.gameActive = false;
-      show(lobbyUi);
-      setLock();
-    });
-
-    socket.on('disconnect', () => {
-      if (PK.online) {
-        resetRoom();
-        if (window.PKGame) PKGame.toMenu();
-        showMenu();
-        setStatus('Conexión perdida con el servidor');
-      }
-    });
-
-      cb(s);
-    });
-  }
-
-  function createRoom() {
-    pendingAction = createRoom;
-    ensureSocket(s => {
-      setStatus('Creando sala...');
-      s.emit('create', $('nick').value, res => {
-        pendingAction = null;
-        if (res.error) { setStatus(res.error); return; }
-        PK.online = true;
-        PK.code = res.code;
-        PK.me = res.you;
-        setStatus('');
-        hide(menuUi);
-        show(lobbyUi);
-        $('lobby-note').textContent = '';
-        renderLobby({ code: res.code, hostId: res.you.id, started: false, players: [Object.assign({ host: true }, res.you)] });
-        setLock();
-      });
-    });
-  }
-
-  function joinRoom() {
-    const code = $('code-in').value.toUpperCase().trim();
-    if (code.length !== 4) { setStatus('El código tiene 4 caracteres'); return; }
-    pendingAction = joinRoom;
-    ensureSocket(s => {
-      setStatus('Uniéndote...');
-      s.emit('join', { code: code, name: $('nick').value }, res => {
-        pendingAction = null;
-        if (res.error) { setStatus(res.error); return; }
-        PK.online = true;
-        PK.code = res.code;
-        PK.me = res.you;
-        setStatus('');
-        if (res.started) { enterGame(); return; }
-        hide(menuUi);
-        show(lobbyUi);
-        $('lobby-note').textContent = '';
-        setLock();
-      });
-    });
+    const base = 'rooms/' + PK.code;
+    FBDB.set(FBDB.ref(db, base + '/state/' + PK.me.id), hotState(s)).catch(() => {});
+    statsAcc += 66;
+    if (statsAcc >= 500) {
+      statsAcc = 0;
+      FBDB.set(FBDB.ref(db, base + '/world/' + PK.me.id), coldWorld({
+        we: s.world ? s.world.we : [],
+        wc: s.world ? s.world.wc : ''
+      })).catch(() => {});
+    }
   }
 
   $('btn-solo').addEventListener('click', () => {
@@ -480,7 +812,10 @@
     e.stopPropagation();
   });
   $('btn-start').addEventListener('click', () => {
-    if (socket) socket.emit('start');
+    if (!db || !PK.online || !infoCache || !PK.me) return;
+    if (infoCache.hostId !== PK.me.id || infoCache.started) return;
+    FBDB.update(FBDB.ref(db, 'rooms/' + PK.code + '/info'), { started: true })
+      .catch(err => setStatus(errMsg(err)));
   });
   $('btn-enter').addEventListener('click', enterGame);
   $('btn-leave').addEventListener('click', leaveRoom);
@@ -490,7 +825,22 @@
     setLock();
   });
   $('btn-rematch').addEventListener('click', () => {
-    if (socket) socket.emit('restart');
+    if (!db || !PK.online || !infoCache || !PK.me || infoCache.hostId !== PK.me.id) return;
+    const upd = { 'info/started': false, state: null, world: null };
+    for (const pid in lobbyCache) {
+      const e = lobbyCache[pid] || {};
+      upd['lobby/' + pid] = {
+        name: e.name,
+        color: e.color,
+        joinedAt: e.joinedAt || Date.now(),
+        done: false,
+        win: false,
+        finished: false,
+        score: 0
+      };
+    }
+    FBDB.update(FBDB.ref(db, 'rooms/' + PK.code), upd)
+      .catch(err => setStatus(errMsg(err)));
   });
   $('btn-results-leave').addEventListener('click', leaveRoom);
   $('btn-corner-menu').addEventListener('click', () => {
@@ -502,7 +852,7 @@
     hide(offlineMsg);
     setLock();
     if (pendingAction) pendingAction();
-    else { setStatus('Conectando al servidor...'); ensureSocket(() => setStatus('Conectado')); }
+    else { setStatus('Conectando al servidor...'); ensureFirebase(() => setStatus('')); }
   });
 
   $('btn-corner-code').addEventListener('click', openAdmin);
@@ -592,14 +942,27 @@
       PK.won = true;
       PK.done = true;
       PK.scoreLocked = true;
-      if (socket) socket.emit('done', { win: true });
+      writeDone(true);
       renderScoreboard();
       show(scoreUi);
     },
     finish: (level, timeMs, sc) => {
-      if (socket && PK.online && PK.gameActive) {
-        socket.emit('finish', { level: level, time: timeMs, score: sc });
-      }
+      if (!db || !PK.online || !PK.gameActive || !PK.me) return;
+      FBDB.runTransaction(FBDB.ref(db, 'rooms/' + PK.code + '/lobby/' + PK.me.id), cur => {
+        const e = cur || {
+          name: (PK.me && PK.me.name) || '',
+          color: (PK.me && PK.me.color) || '',
+          joinedAt: Date.now()
+        };
+        const lvl = Math.max(1, Math.min(3, +level || 1));
+        const t = Math.max(0, +timeMs || 0);
+        const points = Math.max(0, +sc || 0);
+        e.score = Math.max(+e.score || 0, points);
+        e.times = e.times || {};
+        if (t && (!e.times[lvl] || t < e.times[lvl])) e.times[lvl] = t;
+        e.finished = true;
+        return e;
+      }).catch(() => {});
     }
   };
 

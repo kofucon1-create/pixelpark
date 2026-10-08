@@ -1,7 +1,6 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { attachGameServer } = require('./lib/game-io');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(__dirname, 'public');
@@ -46,8 +45,6 @@ const server = http.createServer((req, res) => {
   });
 });
 
-const io = attachGameServer(server);
-
 server.on('error', err => {
   if (err.code === 'EADDRINUSE') {
     console.log('El puerto 3000 ya esta en uso. Abre http://localhost:3000 en el navegador.');
@@ -60,4 +57,4 @@ server.listen(PORT, () => {
   console.log('PixelPark servidor en http://localhost:' + PORT);
 });
 
-module.exports = { server, io };
+module.exports = { server };

@@ -336,7 +336,7 @@
     <div id="lobby-ui" class="panel hidden">
       <h3>SALA DE ESPERA</h3>
       <div class="room-code" id="lobby-code">----</div>
-      <div class="room-hint">Comparte este código (o tu IP si juegan por internet local: http://TU-IP:3000)</div>
+      <div class="room-hint">Comparte este código con tus amigos para que se unan a la sala</div>
       <div id="players"></div>
       <div class="row">
         <button id="btn-start" class="primary hidden">EMPEZAR PARTIDA</button>
@@ -403,9 +403,9 @@
     </div>
 
     <div id="offline-msg" class="hidden">
-      <b>NO SE ENCUENTRA EL SERVIDOR</b><br>
-      Haz doble clic en <b>JUGAR.bat</b>, o ejecuta<br>
-      <b>node server.js</b> en la carpeta y vuelve a intentarlo.
+      <b>NO SE PUEDE CONECTAR CON FIREBASE</b><br>
+      Revisa tu conexión a internet y pulsa REINTENTAR.<br>
+      Si continúa, comprueba que la base de datos de Firebase esté activa.
       <div class="row">
         <button id="btn-retry" class="primary">REINTENTAR</button>
         <button id="btn-offline-ok">CERRAR</button>
@@ -413,7 +413,8 @@
     </div>
   </div>
 </div>
+<script src="firebase-config.js?v=1"></script>
 <script src="game.js?v=2"></script>
-<script src="net.js?v=2"></script>
+<script src="net.js?v=6"></script>
 </body>
 </html>
